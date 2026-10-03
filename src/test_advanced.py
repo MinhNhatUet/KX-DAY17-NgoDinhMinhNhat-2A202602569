@@ -87,3 +87,22 @@ def test_all_dataset_recall_questions_in_fresh_threads(tmp_path):
             assert agent.compaction_count(thread) > 1
             assert agent.prompt_token_usage(thread) < baseline.prompt_token_usage(thread)
             assert 'trade-off' in agent.profile_store.facts(user)['response_style']
+
+
+def test_confidence_threshold_blocks_hedged_and_weak_overwrites(tmp_path):
+    agent = AdvancedAgent(LabConfig(state_dir=tmp_path), force_offline=True)
+    agent.reply('u', 't', 'Hình như mình làm product manager.')
+    assert 'profession' not in agent.profile_store.facts('u')
+    agent.reply('u', 't', 'Mình ở Huế.')
+    agent.reply('u', 't', 'Có lẽ mình ở Hà Nội.')
+    agent.reply('u', 't', 'Mình ở Đà Lạt.')
+    assert agent.profile_store.facts('u')['location'] == 'Huế'
+    agent.reply('u', 't', 'Hiện tại mình ở Đà Nẵng.')
+    answer = agent.reply('u', 'new', 'Mình đang ở đâu?')['answer']
+    assert 'Đà Nẵng' in answer and 'Huế' not in answer
+    agent.reply('u', 't', 'Mình thích trả lời ngắn gọn.')
+    agent.reply('u', 't', 'Mình muốn trả lời có trade-off.')
+    assert agent.profile_store.facts('u')['response_style'] == 'ngắn gọn, trade-off'
+    loose = AdvancedAgent(LabConfig(state_dir=tmp_path / 'loose', profile_confidence_threshold=0.0), force_offline=True)
+    loose.reply('u', 't', 'Hình như mình làm product manager.')
+    assert loose.profile_store.facts('u')['profession'] == 'product manager'

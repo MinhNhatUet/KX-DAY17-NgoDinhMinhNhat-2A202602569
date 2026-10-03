@@ -93,6 +93,27 @@ def _clean_fact(value: str) -> str:
     return value.strip(" .!:")
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_HEDGE = re.compile(r"\b(?:hình như|có lẽ|chắc là|dự định|đang cân nhắc|sắp)\b", re.I)
+_ASSERT = re.compile(r"nhưng thực ra|nhưng hiện tại|không còn|\b(?:hiện tại|bây giờ|giờ|vẫn|đang)\b", re.I)
+
+
+def fact_confidence(sentence: str) -> float:
+    """Hedged = 0.3, explicit current/correction marker = 0.9, plain = 0.7."""
+    # ponytail: hand-tuned lexical scores; calibrate on labelled turns or an LLM judge if needed.
+    return 0.3 if _HEDGE.search(sentence) else 0.9 if _ASSERT.search(sentence) else 0.7
+
+
+def scored_profile_updates(message: str) -> dict[str, tuple[str, float]]:
+    """Same facts as extract_profile_updates(), each with its sentence's confidence."""
+    scored: dict[str, tuple[str, float]] = {}
+    for sentence in _SENTENCE_SPLIT.split(message.strip()):
+        confidence = fact_confidence(sentence)
+        for key, value in extract_profile_updates(sentence).items():
+            scored[key] = (value, confidence)
+    return scored
+
+
 def extract_profile_updates(message: str) -> dict[str, str]:
     """Conservative Vietnamese self-report rules; later assertions win.
 
@@ -100,7 +121,7 @@ def extract_profile_updates(message: str) -> dict[str, str]:
     Temporary news and requests to recall facts are not profile updates.
     """
     updates: dict[str, str] = {}
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", message.strip()):
+    for sentence in _SENTENCE_SPLIT.split(message.strip()):
         # A correction may contrast a historical clause with a current one.
         sentence = re.split(r"nhưng thực ra|nhưng hiện tại", sentence, flags=re.I)[-1]
         lower = sentence.lower()

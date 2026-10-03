@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from config import LabConfig, load_config
-from memory_store import CompactMemoryManager, UserProfileStore, estimate_tokens, extract_profile_updates
+from memory_store import CompactMemoryManager, UserProfileStore, estimate_tokens, scored_profile_updates
 
 
 @dataclass
@@ -55,8 +55,14 @@ class AdvancedAgent:
         return self.compact_memory.compaction_count(thread_id)
 
     def _reply_offline(self, user_id: str, thread_id: str, message: str) -> dict[str, Any]:
-        updates = extract_profile_updates(message)
-        for key, value in updates.items():
+        for key, (value, confidence) in scored_profile_updates(message).items():
+            previous = self.profile_store.facts(user_id).get(key)
+            # Replacing a different stored value needs stronger evidence than a new
+            # fact; response_style merges below, so additions are not replacements.
+            replaces = previous and previous != value and key != "response_style"
+            required = self.config.profile_confidence_threshold + (0.2 if replaces else 0)
+            if confidence < required:
+                continue
             if key == "response_style":
                 # Style reminders are partial: retain independent preferences,
                 # but a new bullet count replaces the old count.

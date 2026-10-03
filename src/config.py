@@ -28,6 +28,7 @@ class LabConfig:
     state_dir: Path = REPO_ROOT / "state"
     compact_threshold_tokens: int = 1000
     compact_keep_messages: int = 4
+    profile_confidence_threshold: float = 0.6
     model: ProviderConfig = field(default_factory=lambda: ProviderConfig("openai", "gpt-4o-mini", 0.0))
     judge_model: ProviderConfig = field(default_factory=lambda: ProviderConfig("openai", "gpt-4o-mini", 0.0))
 

@@ -24,7 +24,7 @@ nhớ qua thread chứ không phải khả năng đọc lại lịch sử vừa 
 Hai lần chạy liên tiếp trên cùng input cho cùng output. `data/` không bị thay
 đổi. `python -m pytest src/test_benchmark.py -q -p no:cacheprovider` cho kết
 quả `8 passed`; toàn bộ `python -m pytest src -q -p no:cacheprovider` cho
-`39 passed`. Chạy lại bảng bằng `python src/benchmark.py`.
+`40 passed`. Chạy lại bảng bằng `python src/benchmark.py`.
 
 ## Bốn kết luận chính
 
@@ -138,8 +138,62 @@ theo số lần sửa. Hành vi này được khóa bằng test:
 - Ghi đè là mất lịch sử: không còn biết trước đây user ở Huế, và một lượt nhiễu
   lọt qua bộ lọc sẽ xóa luôn fact đúng mà không có bước xác nhận.
 
-Bước tiếp theo hợp lý là confidence threshold: chỉ ghi đè fact đã có khi update
-có độ tin cậy cao, còn update mơ hồ thì giữ ở trạng thái chờ xác nhận.
+Rủi ro cuối cùng là lý do của bonus thứ hai bên dưới.
+
+## Bonus thứ hai: Confidence threshold trước khi ghi `User.md`
+
+**Vấn đề.** Conflict handling chỉ lọc theo mẫu câu: một câu không có `?`, `nếu`
+hay `đùa` nhưng vẫn mơ hồ ("Hình như mình làm product manager", "Có lẽ mình ở
+Hà Nội") vẫn qua regex và ghi thẳng vào `User.md`. Tệ hơn, một câu bình thường
+như "Mình ở Đà Lạt" lọt vào giữa hội thoại sẽ ghi đè `location` đúng mà không
+cần bằng chứng gì mạnh hơn lần ghi đầu tiên.
+
+**Cơ chế đã cài.**
+
+- `fact_confidence()` trong `src/memory_store.py` chấm điểm câu chứa fact:
+  `0.3` nếu có từ rào đón (`hình như`, `có lẽ`, `chắc là`, `dự định`,
+  `đang cân nhắc`, `sắp`); `0.9` nếu có dấu hiệu khẳng định hiện tại hoặc
+  correction (`hiện tại`, `bây giờ`, `giờ`, `vẫn`, `đang`, `không còn`,
+  `nhưng thực ra`); còn lại `0.7`. `scored_profile_updates()` trả mỗi fact kèm
+  điểm của chính câu chứa nó, nên một câu rào đón không kéo điểm của câu khác
+  trong cùng lượt.
+- `_reply_offline()` chỉ ghi khi điểm `>= profile_confidence_threshold`
+  (`0.6`, trường mới trong `LabConfig`). Ghi đè một giá trị khác đã có cần
+  thêm `+0.2`, tức phải có dấu hiệu khẳng định/correction. `response_style` được
+  gộp chứ không ghi đè, nên phần bổ sung style không bị tính là ghi đè.
+
+Hệ quả: fact rào đón không bao giờ được ghi; fact mới nói bình thường vẫn được
+ghi; nhưng muốn đổi fact cũ thì user phải nói rõ ("Hiện tại mình ở Đà Nẵng").
+Test `test_confidence_threshold_blocks_hedged_and_weak_overwrites` trong
+`src/test_advanced.py` khóa đúng các hành vi quan sát được: "Hình như mình làm
+product manager" không tạo `profession`; "Có lẽ mình ở Hà Nội" và "Mình ở Đà Lạt"
+không đổi `location: Huế`; "Hiện tại mình ở Đà Nẵng" đổi được và thread mới trả
+lời Đà Nẵng, không còn Huế; đặt ngưỡng `0.0` thì fact rào đón lại bị ghi.
+
+**Cải thiện recall/token thế nào.** Trên hai bộ benchmark, bảng kết quả **không
+đổi** (recall `100%`, `343`/`216` bytes, prompt `22540`/`11541`). Đây là kết
+quả mong muốn nhưng cần đọc đúng: dữ liệu hiện tại không có câu fact rào đón
+nào, nên threshold không có gì để chặn; điều bảng chứng minh là nó **không gây
+false negative** trên 117 lượt thật của hai bộ dữ liệu. Lợi ích nằm ở trường hợp test mô tả: chặn
+fact mơ hồ thì recall không trả lời sai, và `User.md` không phình thêm dòng sai
+(cũng là phần được nạp vào prompt mỗi lượt). Muốn đo bằng số, cần thêm một bộ
+dữ liệu có câu rào đón; `data/` là input chung nên không được sửa để tạo bộ đó.
+
+**Rủi ro thêm vào, có bằng chứng.** Bản đầu tiên áp `+0.2` cho mọi key và đã
+gây false negative thật: khi chạy trên benchmark, nó từ chối 7 lần bổ sung
+`response_style`, làm mất "trade-off" ở Standard và "có cấu trúc" ở Stress.
+Recall vẫn `100%` chỉ vì câu hỏi recall không hỏi các phần đó, tức bảng
+benchmark không tự phát hiện lỗi này. Phải đọc lại `User.md` mới thấy, và sửa
+bằng cách loại `response_style` khỏi luật ghi đè. Bài học: threshold làm hệ
+thống bảo thủ hơn, và bảo thủ sai chỗ sẽ âm thầm làm mất fact đúng. Các rủi ro
+còn lại:
+
+- User đổi nơi ở bằng câu bình thường ("Mình ở Đà Lạt" khi thực sự đã chuyển)
+  sẽ bị bỏ qua. Không có bước hỏi lại để xác nhận.
+- Điểm số là từ vựng chỉnh tay. "đang" được tính là khẳng định, nên "Mình
+  đang ở Hà Nội họp hai ngày" vẫn đủ điểm ghi đè nếu regex trích được.
+- Thêm một tham số cần hiệu chỉnh. Ngưỡng quá cao tăng false negative, quá thấp
+  quay về hành vi cũ.
 
 ## Đối chiếu rubric
 
@@ -155,7 +209,10 @@ có độ tin cậy cao, còn update mơ hồ thì giữ ở trạng thái chờ
 - **90-100:** Bonus Conflict handling đã được cài và test: giải quyết việc fact
   cũ hoặc nhiễu ghi đè fact hiện tại, giữ recall `100%` ở câu hỏi xung đột của
   Stress với `User.md` chỉ `216` bytes, và nêu rõ rủi ro false negative, regex
-  giòn, mất lịch sử khi ghi đè.
+  giòn, mất lịch sử khi ghi đè. Bonus Confidence threshold cũng đã được cài và
+  test: chặn fact rào đón và ghi đè yếu, không gây false negative trên
+  benchmark, và nêu rủi ro dựa trên false negative thật đã gặp với
+  `response_style`.
 
 ## Kết luận
 
