@@ -1,52 +1,87 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from model_provider import ProviderConfig
+from dotenv import load_dotenv
+
+from model_provider import ProviderConfig, normalize_provider
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "custom": "local-model",
+    "gemini": "gemini-2.5-flash",
+    "anthropic": "claude-sonnet-4-5",
+    "ollama": "llama3.2",
+    "openrouter": "openai/gpt-4o-mini",
+}
 
 
 @dataclass
 class LabConfig:
-    """Student TODO: define the shared configuration for the lab.
+    """Shared paths, compact-memory limits, and live model settings."""
 
-    Hints:
-    - Keep paths for the repo root, dataset directory, and state directory.
-    - Add compact-memory settings such as threshold and number of messages to keep.
-    - Add provider settings for `openai`, `custom`, `gemini`, `anthropic`, `ollama`, and `openrouter`.
-    """
+    base_dir: Path = REPO_ROOT
+    data_dir: Path = REPO_ROOT / "data"
+    state_dir: Path = REPO_ROOT / "state"
+    compact_threshold_tokens: int = 1000
+    compact_keep_messages: int = 4
+    model: ProviderConfig = field(default_factory=lambda: ProviderConfig("openai", "gpt-4o-mini", 0.0))
+    judge_model: ProviderConfig = field(default_factory=lambda: ProviderConfig("openai", "gpt-4o-mini", 0.0))
 
-    base_dir: Path
-    data_dir: Path
-    state_dir: Path
-    compact_threshold_tokens: int
-    compact_keep_messages: int
-    model: ProviderConfig
-    judge_model: ProviderConfig
+
+def _positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}")
+    return value
+
+
+def _provider_config(provider: str) -> ProviderConfig:
+    prefix = provider.upper()
+    return ProviderConfig(
+        provider=provider,
+        model_name=DEFAULT_MODELS[provider],
+        temperature=0.0,
+        api_key=os.getenv(f"{prefix}_API_KEY") or None,
+        base_url=(None if provider == "gemini" else
+                  os.getenv(f"{prefix}_BASE_URL") or
+                  ("http://localhost:11434" if provider == "ollama" else None)),
+    )
 
 
 def load_config(base_dir: Path | None = None) -> LabConfig:
-    """Student TODO: load environment variables and return a LabConfig.
+    """Read root/.env without overriding process env; never instantiate a model."""
+    root = (base_dir or REPO_ROOT).resolve()
+    load_dotenv(root / ".env", override=False)
+    provider = normalize_provider(os.getenv("LLM_PROVIDER", "openai"))
+    model = _provider_config(provider)
+    model.model_name = os.getenv("LLM_MODEL") or model.model_name
+    model.temperature = float(os.getenv("LLM_TEMPERATURE", "0"))
 
-    Pseudocode:
-    1. Resolve the repo root or default to the current file parent.
-    2. Optionally load values from `.env`.
-    3. Create `state/` if it does not exist.
-    4. Return a populated LabConfig instance.
-    """
+    judge_provider = normalize_provider(os.getenv("JUDGE_PROVIDER", provider))
+    judge = replace(model) if judge_provider == provider else _provider_config(judge_provider)
+    judge.model_name = os.getenv("JUDGE_MODEL") or judge.model_name
+    judge.temperature = float(os.getenv("JUDGE_TEMPERATURE", "0"))
+    judge.api_key = os.getenv("JUDGE_API_KEY") or judge.api_key
+    judge.base_url = os.getenv("JUDGE_BASE_URL") or judge.base_url
 
-    root = (base_dir or Path(__file__).resolve().parent.parent).resolve()
-
-    # TODO: read env vars for one of the supported providers.
-    # Example knobs:
-    # - LLM_PROVIDER / LLM_MODEL
-    # - OPENAI_API_KEY
-    # - GEMINI_API_KEY
-    # - ANTHROPIC_API_KEY
-    # - OLLAMA_BASE_URL
-    # - OPENROUTER_API_KEY
-    # - CUSTOM_BASE_URL / CUSTOM_API_KEY
-    # TODO: create `root / "state"`.
-    # TODO: choose sensible defaults for compact memory.
-
-    raise NotImplementedError("Students should implement load_config().")
+    threshold = _positive_int("COMPACT_THRESHOLD_TOKENS", 1000)
+    keep_messages = _positive_int("COMPACT_KEEP_MESSAGES", 4)
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return LabConfig(
+        base_dir=root,
+        data_dir=root / "data",
+        state_dir=state_dir,
+        compact_threshold_tokens=threshold,
+        compact_keep_messages=keep_messages,
+        model=model,
+        judge_model=judge,
+    )
